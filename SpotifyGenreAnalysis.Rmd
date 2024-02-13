@@ -1,0 +1,299 @@
+---
+title: "Analyzing Genre Influence on Spotify Track Characteristics"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+Necessary R libraries:
+```{r, results='hide'}
+library(base)
+library(reticulate) #for Python interface
+library(psych) #for skew/kurt functions
+library(moments)
+library(stats)
+library(lsr)
+```
+
+Necessary Python libraries:
+```{python, results='hide'}
+import kaggle
+import requests
+import kaggle.cli
+import sys
+import numpy
+import pandas as pd
+from pathlib import Path
+from zipfile import ZipFile
+from kaggle.cli import main
+```
+
+```{python, results='hide'}
+#download data set from Kaggle
+dataset="thedevastator/spotify-tracks-genre-dataset"
+sys.argv=[sys.argv[0]] + f"datasets download {dataset}".split(" ")
+
+kaggle_zip=ZipFile(f"{dataset.split('/')[1]}.zip")
+songdat={i.filename:pd.read_csv(kaggle_zip.open(i)) for i in kaggle_zip.infolist() }["train.csv"]
+
+#Close the ZipFile object
+kaggle_zip.close()
+```
+
+```{python, echo=FALSE}
+import pandas as pd
+
+songdat.drop(["Unnamed: 0"], axis=1, inplace=True) #Delete unused row
+songdat.rename(columns={'track_genre': 'track_subgenre'}, inplace=True) #rename existing genre column to subgenre,(these genres are too specific IMO)
+
+```
+
+Clean data (python): group subgenres into broader catagories for new genre row
+```{python}
+import numpy
+
+#Pop
+songdat.loc[songdat['track_subgenre'].str.contains('pop', case=False, na=False)| songdat['track_subgenre'].str.contains('idol', case=False, na=False), 'track_genre']='Pop'
+
+#Metal
+songdat.loc[songdat['track_subgenre'].str.contains('metal', case=False, na=False) | (songdat['track_subgenre']=='hardcore'), 'track_genre']='Metal'
+
+#Rock
+rock_conditions=songdat['track_subgenre'].str.contains('rock', case=False, na=False) | songdat['track_subgenre'].isin(['goth', 'emo', 'garage', 'grunge', 'punk'])
+songdat.loc[rock_conditions, 'track_genre']='Rock'
+
+#Reggae
+songdat.loc[songdat['track_subgenre'].str.contains('reggae', case=False, na=False) | (songdat['track_subgenre']=='ska'), 'track_genre']='Reggae'
+
+#Electronic
+electronic_conditions=songdat['track_subgenre'].str.contains('dance', case=False, na=False) | songdat['track_subgenre'].str.startswith('electro') | songdat['track_subgenre'].str.startswith('dub') | songdat['track_subgenre'].str.contains('house', case=False, na=False) | songdat['track_subgenre'].str.contains('techno', case=False, na=False) | songdat['track_subgenre'].isin(['edm', 'party', 'dubstep', 'hardstyle', 'breakbeat', 'club', 'drum-and-bass', 'idm', 'trance', 'trip-hop', 'industrial', 'happy'])
+songdat.loc[electronic_conditions, 'track_genre']='Electronic'
+
+#Disco
+songdat.loc[songdat['track_subgenre'].str.contains('disco', case=False, na=False), 'track_genre']='Disco'
+
+#Jazz
+songdat.loc[songdat['track_subgenre'].str.contains('jazz', case=False, na=False), 'track_genre']='Jazz'
+
+#Blues
+songdat.loc[songdat['track_subgenre']=='blues', 'track_genre']='Blues'
+
+#Folk
+songdat.loc[songdat['track_subgenre'].isin(['folk', 'bluegrass']), 'track_genre']='Folk'
+
+#Country
+songdat.loc[songdat['track_subgenre']=='country', 'track_genre']='Country'
+
+#R&B/Soul
+songdat.loc[songdat['track_subgenre'].isin(['r-n-b', 'funk', 'soul', 'groove', 'afrobeat']), 'track_genre']='R&B/Soul'
+
+#Latin
+latin_conditions=songdat['track_subgenre'].str.contains('latin', case=False, na=False) | songdat['track_subgenre'].isin(['brazil', 'forro', 'mpb', 'pagode', 'salsa', 'samba', 'sertanejo', 'spanish'])
+songdat.loc[latin_conditions, 'track_genre']='Latin'
+
+#World
+world_conditions=songdat['track_subgenre'].str.contains('world', case=False, na=False) | songdat['track_subgenre'].isin(['french', 'german', 'indian', 'malay', 'swedish', 'turkish', 'british', 'anime']) 
+songdat.loc[world_conditions, 'track_genre']='World'
+
+#Hip-hop
+songdat.loc[songdat['track_subgenre'].isin(['hip-hop', 'sad']), 'track_genre']='Hip-hop'
+
+#Kids
+songdat.loc[songdat['track_subgenre'].isin(['children', 'kids', 'disney', 'comedy', 'show-tunes']), 'track_genre']='Kids/Family'
+
+#Alternative
+songdat.loc[songdat['track_subgenre'].isin(['alternative', 'chill', 'indie', 'new-age', 'sleep', 'ambient']), 'track_genre']='Alternative'
+
+#Instrumental
+songdat.loc[songdat['track_subgenre'].isin(['acoustic', 'guitar', 'piano']), 'track_genre']='Instrumental'
+
+#Singer-songwriter
+songdat.loc[songdat['track_subgenre'].str.contains('songwriter', case=False, na=False), 'track_genre']='Singer-songwriter'
+
+#Classical
+songdat.loc[songdat['track_subgenre'].isin(['classical', 'gospel', 'opera']), 'track_genre']='Classical'
+
+
+#Capitalize first letter in Track Subgenre
+songdat['track_subgenre']=songdat['track_subgenre'].apply(lambda x: x.capitalize())
+```
+
+
+Check if we've left behind any track_subgenre rows that haven't been matched with track_genre 
+
+```{python}
+
+if(songdat['track_genre'].isnull().sum())!=0:
+    null_rows=songdat[songdat['track_genre'].isnull()]
+    grouped_null=null_rows.groupby('track_subgenre').size().reset_index(name='count')
+    print(grouped_null)
+
+
+#Missed Grindcore, Honky-tonk, Iranian, Romance, Study, Tango
+
+#Add Grindcore to Metal
+songdat.loc[songdat['track_subgenre']=='Grindcore', 'track_genre']='Metal'
+
+#Add Honky-tonk to Country
+songdat.loc[songdat['track_subgenre']=='Honky-tonk', 'track_genre']='Country'
+
+#Add Iranian to World
+songdat.loc[songdat['track_subgenre']=='Iranian', 'track_genre']='World'
+
+#Add Tango to Latin
+songdat.loc[songdat['track_subgenre']=='Tango', 'track_genre']='Latin'
+
+#Add Study to Alternative
+songdat.loc[songdat['track_subgenre']=='Study', 'track_genre']='Alternative'
+
+#Not sure where Romance should go, let's look at the artist names
+romance=songdat[songdat['track_subgenre']=='Romance']
+print(romance[['artists','track_name']].sort_values(by='artists'))
+#Looks like Romance is a form of classical Russian music, add to World
+songdat.loc[songdat['track_subgenre']=='Romance', 'track_genre']='World'
+
+```
+
+
+
+Choose numeric variables we want to compare against track_genre, our predictor variable. Let's try "popularity", "energy", "tempo", "duration_ms", "danceability","loudness". We'll scale all our raw values first to make comparison easier.
+
+```{r}
+# Convert py$songdat from Python to R dataframe
+
+
+numeric_columns <- c("popularity", "energy", "tempo", "duration_ms", "danceability","loudness")
+
+#Quick function to scale our rows quickly
+scale_column <- function(df, column_name) {
+  if (!column_name %in% colnames(df)) {
+    stop("Column not found in the songdat")
+  }
+  
+  df_scaled <- df
+  df_scaled[[paste0(column_name, "_scaled")]] <- scale(df[[column_name]], scale=FALSE)
+  
+  return(df_scaled)
+}
+
+#cycle through all our rows in numeric_colummns, scaling each, and append to songdat
+for (column_name in as.character(numeric_columns)) {
+  scaled_column<-scale(py$songdat[column_name],scale=FALSE)
+    py$songdat[[paste0(column_name, "_scaled")]] <-scaled_column[, 1]
+}
+
+```
+
+Now check the Skew/Kurtosis values for all our dv's of interest.
+```{r}
+
+#Look at skew/kurt for scaled variables
+skewness_scaled <- skew(py$songdat[paste0(numeric_columns,"_scaled")])
+kurtosis_scaled <- kurtosis(py$songdat[paste0(numeric_columns,"_scaled")])
+
+
+#Combine results into a data frame for easier viewing
+skew_kurtosis_df <- data.frame(skewness=skewness_scaled, kurtosis=kurtosis_scaled)
+print(skew_kurtosis_df)
+
+#Duration_ms has way too much skew/kurt, 11.19503417 and 357.936795! Not worth attempting a transformation, too much variance
+numeric_columns<-subset(numeric_columns, numeric_columns!="duration_ms") #Drop Duration_ms
+
+```
+
+All variables look good except for 2, duration_ms and loudness. We removed duration_ms because the skew/kurt was to extreme to fix through transformations. Loudness has a kurtosis of 8.9, which is problematic but might benefit from transformations. Let's try square root, inverse, and log transformations.
+
+```{r}
+song_pos=abs(py$songdat$loudness+1e-10)#There are 0s, to avoid NaN results add a really small number so it's technically positive
+
+#Square Root
+songNormSqt <- data.frame((song_pos+1)^0.5)
+skewnessSqt <- skew(song_pos)
+kurtosisSqt <- kurtosis(song_pos)
+
+skewnessSqt
+kurtosisSqt
+
+#Inverse
+songNormIn <- 1/(song_pos+1)
+skewnessIn <- skew(songNormIn)
+kurtosisIn <- kurtosis(songNormIn)
+
+skewnessIn
+kurtosisIn
+
+#Log
+songNormLg <- log10(song_pos+1)
+
+skewnessLg <- skew(songNormLg)
+kurtosisLg <- kurtosis(songNormLg)
+
+kurtosisLg #Log looks good, kurtosis improved from 8.9 to 3.6 and skew is still minimal at .20.
+skewnessLg 
+```
+
+The Log transformation for loudness looks great, skew dropped to 3.6 from 8.9. Let's apply this normally distributed version and use it as our loudness variable.
+```{r}
+
+#Let's replace our raw loudness data with our more normalized log transformation
+#use unlist to ensure songNormLg is a 1-dim array
+loudness_log_scaled_standardized <- scale(unlist(songNormLg)) #rescale
+
+#assign scaled loudness values to songdat
+py$songdat$loudness_log_scaled <- loudness_log_scaled_standardized[,1]
+
+#update the numeric column list since we aren't using the raw
+#Find the index of "loudness"
+index_to_replace <- which(numeric_columns=="loudness")
+
+#replace "loudness" with "loudness_log_scaled"
+numeric_columns[index_to_replace] <- "loudness_log_scaled"
+```
+
+```{r, echo=FALSE, results='hide'}
+rm(romance)
+rm(column_name)
+rm(index_to_replace)
+rm(kurtosis_scaled)
+rm(kurtosisIn)
+rm(kurtosisLg)
+rm(KurtosisSqt)
+rm(skewness_scaled)
+rm(skewnessIn)
+rm(skewnessLg)
+rm(skewnessSqt)
+rm(song_pos)
+rm(songNormIn)
+gc()
+```
+Let's perform a series of one-way ANOVAs, using our numeric_column ("popularity", "energy", "tempo","danceability", "loudness_log_squared") as our dv's, and track_genre as our iv
+```{r}
+
+for(column_name in as.character(numeric_columns)){ 
+print(column_name)
+  aovTemp<-aov(py$songdat[[column_name]]~py$songdat$track_genre)
+print(summary(aovTemp)) #Print ANOVA results 
+print(etaSquared(aovTemp,type=3,anova=TRUE)) #...and eta-squard (effect size)
+}
+```
+
+Surprisingly all of our dv's produced significant results, meaning track popularity, energy, tempo, danceability, and loudness are all influenced by a song's genre, p<.001. The largest effect sizes were seen for danceability (η2=.24) and loudness (η2=.22).
+
+Since we know the means differ between track genre's, lets do some summary stats for each of our iv's by track genre. Pairwise analysis would be too much here since we have 18 distinct genre values, but we know we can trust our mean/median/modes due to significant ANOVA results.
+
+```{r}
+options(max.print =1000000)
+
+#print the mean, median, sd for all our values of interest
+summary_stats_by_genre <- aggregate(py$songdat[numeric_columns], by=list(track_genre=py$songdat$track_genre), FUN=function(x) c(mean=mean(x), median=median(x), sd=sd(x)))
+
+print(summary_stats_by_genre)
+```
+
+Looks good, let's export our summary data into a CSV to import into Tableau!
+```{r}
+write.csv(summary_stats_by_genre, file="summary_stats_by_genre.csv", row.names=FALSE)
+```
+
